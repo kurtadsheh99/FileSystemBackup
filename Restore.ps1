@@ -1,6 +1,9 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# Create a global variable to track cancellation
+$script:cancelRestore = $false
+
 # Define colors
 $backgroundColor = [System.Drawing.Color]::FromArgb(245, 246, 247)
 $accentColor = [System.Drawing.Color]::FromArgb(0, 120, 212)
@@ -18,13 +21,13 @@ $titleFont = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
 # Create the main form
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "File Restore System"
-$form.Size = New-Object System.Drawing.Size(600,700)
+$form.Size = New-Object System.Drawing.Size(600,800)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = $backgroundColor
 $form.Font = $defaultFont
 
 # Create a custom GroupBox style
-function Create-GroupBox {
+function New-GroupBox {
     param($title, $location, $size)
     $groupBox = New-Object System.Windows.Forms.GroupBox
     $groupBox.Text = $title
@@ -37,7 +40,7 @@ function Create-GroupBox {
 }
 
 # Create a custom button style
-function Create-Button {
+function New-Button {
     param($text, $location, $size)
     $button = New-Object System.Windows.Forms.Button
     $button.Text = $text
@@ -61,7 +64,7 @@ function Create-Button {
 }
 
 # Create Backup Location GroupBox
-$locationGroupBox = Create-GroupBox "Backup Location" (New-Object System.Drawing.Point(10,20)) (New-Object System.Drawing.Size(560,80))
+$locationGroupBox = New-GroupBox "Backup Location" (New-Object System.Drawing.Point(10,20)) (New-Object System.Drawing.Size(560,80))
 $form.Controls.Add($locationGroupBox)
 
 # Default Location Label
@@ -97,7 +100,7 @@ $customLocationTextBox.ReadOnly = $true
 $locationGroupBox.Controls.Add($customLocationTextBox)
 
 # Browse Button
-$browseButton = Create-Button "Browse folder" (New-Object System.Drawing.Point(460,47)) (New-Object System.Drawing.Size(90,23))
+$browseButton = New-Button "Browse folder" (New-Object System.Drawing.Point(460,47)) (New-Object System.Drawing.Size(90,23))
 $browseButton.Add_Click({
     $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
     $folderBrowser.Description = "Select the folder containing your backups"
@@ -118,19 +121,19 @@ $allUsers = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notin 
 # Create Users Panel
 $usersPanel = New-Object System.Windows.Forms.Panel
 $usersPanel.Location = New-Object System.Drawing.Point(10,110)
-$usersPanel.Size = New-Object System.Drawing.Size(560,150)
+$usersPanel.Size = New-Object System.Drawing.Size(560,250)
 $usersPanel.AutoScroll = $false
 $usersPanel.BackColor = $backgroundColor
 $form.Controls.Add($usersPanel)
 
 # Create Users GroupBox
-$usersGroupBox = Create-GroupBox "Select Backup Source and Target User" (New-Object System.Drawing.Point(0,0)) (New-Object System.Drawing.Size(540,150))
+$usersGroupBox = New-GroupBox "Select Backup Source and Target User" (New-Object System.Drawing.Point(0,0)) (New-Object System.Drawing.Size(540,250))
 $usersPanel.Controls.Add($usersGroupBox)
 
 # Create Users Scroll Panel
 $usersScrollPanel = New-Object System.Windows.Forms.Panel
 $usersScrollPanel.Location = New-Object System.Drawing.Point(10,20)
-$usersScrollPanel.Size = New-Object System.Drawing.Size(520,120)
+$usersScrollPanel.Size = New-Object System.Drawing.Size(520,220)
 $usersScrollPanel.AutoScroll = $true
 $usersGroupBox.Controls.Add($usersScrollPanel)
 
@@ -220,6 +223,7 @@ function Update-UserBackups {
         } else {
             $comboBox.Items.Add("No backups found")
             $comboBox.SelectedIndex = 0
+            $userControls[$username]["Backups"] = @()
         }
     }
 }
@@ -227,18 +231,286 @@ function Update-UserBackups {
 # Initial backup update
 Update-UserBackups
 
+# Create a function to check if the script is running with admin rights
+function Test-AdminRights {
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# Function to check if backup contains Program Files
+function Test-ContainsProgramFiles {
+    param(
+        [string]$backupPath
+    )
+    
+    if (-not (Test-Path $backupPath)) {
+        return $false
+    }
+    
+    $programFilesBackups = Get-ChildItem -Path $backupPath -Directory | Where-Object { 
+        $_.Name -like "Program+Files*" 
+    }
+    
+    return $programFilesBackups.Count -gt 0
+}
+
+# Status Label
+$statusLabel = New-Object System.Windows.Forms.Label
+$statusLabel.Location = New-Object System.Drawing.Point(10,375)
+$statusLabel.Size = New-Object System.Drawing.Size(560,20)
+$statusLabel.Text = "Status and Progress:"
+$statusLabel.ForeColor = $accentColor
+$statusLabel.Font = $titleFont
+$form.Controls.Add($statusLabel)
+
 # Status TextBox
 $statusTextBox = New-Object System.Windows.Forms.TextBox
-$statusTextBox.Location = New-Object System.Drawing.Point(10,270)
-$statusTextBox.Size = New-Object System.Drawing.Size(560,280)
+$statusTextBox.Location = New-Object System.Drawing.Point(10,400)
+$statusTextBox.Size = New-Object System.Drawing.Size(560,180)
 $statusTextBox.Multiline = $true
 $statusTextBox.ScrollBars = "Vertical"
 $statusTextBox.BackColor = $textBoxBackColor
 $statusTextBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+$statusTextBox.ReadOnly = $true
 $form.Controls.Add($statusTextBox)
 
+# Function to restore files
+function Restore-Files {
+    param(
+        [string]$backupPath,
+        [string]$targetUser,
+        [array]$selectedFolders = @()
+    )
+    
+    # Show the cancel button in the main form
+    $cancelRestoreButton.Visible = $true
+    $cancelRestoreButton.Enabled = $true
+    $cancelRestoreButton.Text = "Cancel Restore"
+    
+    # Reset cancel flag
+    $script:cancelRestore = $false
+    
+    $errors = @()
+    $skippedFolders = @()
+    
+    # Get all directories in the backup (each represents a backed-up folder)
+    $backupDirs = Get-ChildItem -Path $backupPath -Directory | Where-Object { $_.Name -ne "temp" }
+    
+    if ($backupDirs.Count -eq 0) {
+        $statusTextBox.AppendText("No folders found in the backup.`r`n")
+        return
+    }
+    
+    # Filter directories based on selected folders if any are specified
+    if ($selectedFolders.Count -gt 0) {
+        $statusTextBox.AppendText("Restoring only selected folders: $($selectedFolders -join ', ')`r`n")
+        $filteredDirs = @()
+        
+        foreach ($dir in $backupDirs) {
+            $folderType = ""
+            $folderName = ""
+            
+            # Check if this is a Program Files folder
+            if ($dir.Name -eq "Program+Files" -or $dir.Name -eq "Program+Files+(x86)" -or $dir.Name -match "^Program\+Files") {
+                $folderType = "Program Files"
+                if ($dir.Name -match "\(x86\)") {
+                    $folderName = "Program Files (x86)"
+                } else {
+                    $folderName = "Program Files"
+                }
+            } 
+            # Check if this is a user folder
+            elseif ($dir.Name -match "^Users\+") {
+                $parts = $dir.Name -split "\+"
+                if ($parts.Count -ge 3) {
+                    $folderType = "User Folder"
+                    $folderName = $parts[2]
+                }
+            }
+            
+            # Add to filtered list if selected
+            if ($folderType -and $selectedFolders -contains $folderName) {
+                $filteredDirs += $dir
+                $statusTextBox.AppendText("Selected for restore: $folderName ($($dir.Name))`r`n")
+            }
+        }
+        
+        # Update the list of directories to process
+        $backupDirs = $filteredDirs
+        $statusTextBox.AppendText("Total folders to restore: $($backupDirs.Count)`r`n")
+        
+        if ($backupDirs.Count -eq 0) {
+            $statusTextBox.AppendText("No matching folders found for the selected items.`r`n")
+            return
+        }
+    }
+    
+    $totalDirs = $backupDirs.Count
+    $processedDirs = 0
+    
+    foreach ($dir in $backupDirs) {
+        # Check for cancellation
+        if ($script:cancelRestore) {
+            $statusTextBox.AppendText("`r`nRestore cancelled by user.`r`n")
+            break
+        }
+        
+        $processedDirs++
+        $progress = [math]::Round(($processedDirs / $totalDirs) * 100)
+        $statusTextBox.AppendText("`r`nProcessing folder $processedDirs of $totalDirs ($progress%): $($dir.Name)`r`n")
+        
+        # Force UI update
+        [System.Windows.Forms.Application]::DoEvents()
+        
+        try {
+            # Determine if this is a system folder or user folder
+            if ($dir.Name -eq "Program+Files" -or $dir.Name -eq "Program+Files+(x86)" -or $dir.Name -match "^Program\+Files") {
+                # Skip Program Files if we don't have admin rights
+                if (-not (Test-AdminRights)) {
+                    $statusTextBox.AppendText("Skipping system folder (requires administrator rights): $($dir.Name)`r`n")
+                    continue
+                }
+                
+                # System folder (Program Files)
+                $targetPath = "C:\$($dir.Name.Replace('+', ' '))"
+                $statusTextBox.AppendText("Restoring to system folder: $targetPath`r`n")
+            } 
+            elseif ($dir.Name.StartsWith("Program+Files")) {
+                # This is for backward compatibility with older backups that might have different formats
+                # Skip Program Files if we don't have admin rights
+                if (-not (Test-AdminRights)) {
+                    $statusTextBox.AppendText("Skipping system folder (requires administrator rights): $($dir.Name)`r`n")
+                    continue
+                }
+                
+                # Try to determine the correct Program Files path
+                if ($dir.Name -match "Program\+Files\+\(x86\)") {
+                    $targetPath = "C:\Program Files (x86)"
+                } else {
+                    $targetPath = "C:\Program Files"
+                }
+                $statusTextBox.AppendText("Restoring to system folder: $targetPath`r`n")
+            } else {
+                # Regular user folder
+                $parts = $dir.Name -split "\+"
+                if ($parts.Count -lt 3) {
+                    $statusTextBox.AppendText("Invalid folder format: $($dir.Name). Skipping.`r`n")
+                    $skippedFolders += "Folder '$($dir.Name)' has invalid format"
+                    continue
+                }
+                $folderPath = $parts[2..($parts.Length-1)] -join "\"
+                $targetPath = "C:\Users\$targetUser\$folderPath"
+                $statusTextBox.AppendText("Restoring to user folder: $targetPath`r`n")
+            }
+            
+            # Create target directory if it doesn't exist
+            if (-not (Test-Path $targetPath)) {
+                New-Item -ItemType Directory -Path $targetPath -Force | Out-Null
+                $statusTextBox.AppendText("Created target directory: $targetPath`r`n")
+            }
+            
+            # Get source path
+            $sourcePath = Join-Path $backupPath $dir.Name
+            
+            if (-not (Test-Path $sourcePath)) {
+                $statusTextBox.AppendText("Source path does not exist: $sourcePath. Skipping.`r`n")
+                $skippedFolders += "Source path for '$($dir.Name)' does not exist"
+                continue
+            }
+            
+            # Get all items to copy
+            $items = Get-ChildItem -Path $sourcePath -Recurse
+            $totalItems = $items.Count
+            
+            if ($totalItems -eq 0) {
+                $statusTextBox.AppendText("No items found in $sourcePath. Skipping.`r`n")
+                $skippedFolders += "No items found in '$($dir.Name)'"
+                continue
+            }
+            
+            $processedItems = 0
+            
+            foreach ($item in $items) {
+                # Check for cancellation periodically
+                $processedItems++
+                if ($processedItems % 50 -eq 0) {
+                    if ($script:cancelRestore) {
+                        throw "Restore cancelled by user"
+                    }
+                    # Update progress
+                    $itemProgress = [math]::Round(($processedItems / $totalItems) * 100)
+                    $statusTextBox.AppendText("Progress: $itemProgress% ($processedItems of $totalItems items)`r")
+                    # Refresh the UI
+                    [System.Windows.Forms.Application]::DoEvents()
+                }
+                
+                $relativePath = $item.FullName.Substring($sourcePath.Length + 1)
+                $destPath = Join-Path $targetPath $relativePath
+                
+                if ($item.PSIsContainer) {
+                    # Create directory
+                    if (-not (Test-Path $destPath)) {
+                        New-Item -ItemType Directory -Path $destPath -Force | Out-Null
+                    }
+                } else {
+                    # Create parent directory if it doesn't exist
+                    $destDir = Split-Path -Parent $destPath
+                    if (-not (Test-Path $destDir)) {
+                        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+                    }
+                    # Copy file
+                    Copy-Item -Path $item.FullName -Destination $destPath -Force
+                }
+            }
+            
+            $statusTextBox.AppendText("`r`nSuccessfully restored $($dir.Name) to $targetPath`r`n")
+        }
+        catch {
+            if ($_.ToString() -eq "Restore cancelled by user") {
+                $statusTextBox.AppendText("`r`nRestore of $($dir.Name) was cancelled.`r`n")
+                break
+            } else {
+                $errors += "${dir.Name}: $($_.ToString().Replace(':', '\:'))"
+                $statusTextBox.AppendText("Error restoring $($dir.Name): $($_.ToString().Replace(':', '\:'))`r`n")
+            }
+        }
+    }
+    
+    if ($script:cancelRestore) {
+        $statusTextBox.AppendText("`r`nRestore operation was cancelled by user.`r`n")
+    }
+    elseif ($errors.Count -eq 0 -and $skippedFolders.Count -eq 0) {
+        $statusTextBox.AppendText("`r`nRestore completed successfully!`r`n")
+    }
+    else {
+        $statusTextBox.AppendText("`r`nRestore completed with issues:`r`n")
+        
+        if ($skippedFolders.Count -gt 0) {
+            $statusTextBox.AppendText("`r`nSkipped folders:`r`n")
+            $statusTextBox.SelectionColor = [System.Drawing.Color]::Red
+            foreach ($folder in $skippedFolders) {
+                $statusTextBox.AppendText("- $folder`r`n")
+            }
+        }
+        
+        if ($errors.Count -gt 0) {
+            $statusTextBox.AppendText("`r`nErrors:`r`n")
+            $statusTextBox.SelectionColor = [System.Drawing.Color]::Red
+            foreach ($error in $errors) {
+                $statusTextBox.AppendText("- $error`r`n")
+            }
+        }
+    }
+    
+    # Hide the cancel button in the main form
+    $cancelRestoreButton.Visible = $false
+    $cancelRestoreButton.Enabled = $true
+    $cancelRestoreButton.Text = "Cancel Restore"
+}
+
 # Select All Button
-$selectAllButton = Create-Button "Select All Users" (New-Object System.Drawing.Point(10,560)) (New-Object System.Drawing.Size(270,30))
+$selectAllButton = New-Button "Select All Users" (New-Object System.Drawing.Point(10,590)) (New-Object System.Drawing.Size(270,30))
 $selectAllButton.Add_Click({
     foreach ($controls in $userControls.Values) {
         $controls["Checkbox"].Checked = $true
@@ -247,7 +519,7 @@ $selectAllButton.Add_Click({
 $form.Controls.Add($selectAllButton)
 
 # Deselect All Button
-$deselectAllButton = Create-Button "Deselect All Users" (New-Object System.Drawing.Point(290,560)) (New-Object System.Drawing.Size(280,30))
+$deselectAllButton = New-Button "Deselect All Users" (New-Object System.Drawing.Point(290,590)) (New-Object System.Drawing.Size(280,30))
 $deselectAllButton.Add_Click({
     foreach ($controls in $userControls.Values) {
         $controls["Checkbox"].Checked = $false
@@ -256,85 +528,263 @@ $deselectAllButton.Add_Click({
 $form.Controls.Add($deselectAllButton)
 
 # Restore Button
-$restoreButton = Create-Button "Start Restore" (New-Object System.Drawing.Point(10,600)) (New-Object System.Drawing.Size(560,30))
+$restoreButton = New-Button "Start Restore" (New-Object System.Drawing.Point(10,630)) (New-Object System.Drawing.Size(560,30))
 $restoreButton.Add_Click({
-    $selectedUsers = $userControls.Keys | Where-Object { $userControls[$_]["Checkbox"].Checked }
+    # Reset cancel flag at the beginning of a new restore operation
+    $script:cancelRestore = $false
+    
+    $selectedUsers = @()
+    $selectedFolders = @()
+    foreach ($username in $userControls.Keys) {
+        if ($userControls[$username]["Checkbox"].Checked) {
+            $selectedUsers += $username
+            $selectedBackupText = $userControls[$username]["ComboBox"].SelectedItem
+            $targetUser = $userControls[$username]["TargetUserComboBox"].SelectedItem
+            
+            if (-not $selectedBackupText -or $selectedBackupText -eq "No backups found") {
+                $selectedUsers = $selectedUsers | Where-Object { $_ -ne $username }
+                continue
+            }
+            
+            if (-not $targetUser) {
+                $selectedUsers = $selectedUsers | Where-Object { $_ -ne $username }
+                continue
+            }
+            
+            # Get the actual backup folder based on the selected text
+            $backupIndex = $userControls[$username]["ComboBox"].SelectedIndex
+            $selectedBackup = $userControls[$username]["Backups"][$backupIndex]
+            
+            if (-not $selectedBackup -or -not (Test-Path $selectedBackup.FullName)) {
+                $selectedUsers = $selectedUsers | Where-Object { $_ -ne $username }
+                continue
+            }
+        }
+    }
     
     if ($selectedUsers.Count -eq 0) {
         [System.Windows.Forms.MessageBox]::Show("Please select at least one user to restore.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         return
     }
+    
+    # Create folder selection dialog
+    $folderSelectionForm = New-Object System.Windows.Forms.Form
+    $folderSelectionForm.Text = "Select Folders to Restore"
+    $folderSelectionForm.Size = New-Object System.Drawing.Size(400, 500)
+    $folderSelectionForm.StartPosition = "CenterScreen"
+    $folderSelectionForm.FormBorderStyle = "FixedDialog"
+    $folderSelectionForm.MaximizeBox = $false
+    $folderSelectionForm.MinimizeBox = $false
+    $folderSelectionForm.TopMost = $true
+    
+    $label = New-Object System.Windows.Forms.Label
+    $label.Location = New-Object System.Drawing.Point(10, 10)
+    $label.Size = New-Object System.Drawing.Size(380, 40)
+    $label.Text = "Select the folders you want to restore. If none are selected, all folders will be restored."
+    $folderSelectionForm.Controls.Add($label)
+    
+    $folderListBox = New-Object System.Windows.Forms.CheckedListBox
+    $folderListBox.Location = New-Object System.Drawing.Point(10, 60)
+    $folderListBox.Size = New-Object System.Drawing.Size(360, 300)
+    $folderListBox.CheckOnClick = $true
+    $folderSelectionForm.Controls.Add($folderListBox)
+    
+    $selectAllButton = New-Object System.Windows.Forms.Button
+    $selectAllButton.Location = New-Object System.Drawing.Point(10, 370)
+    $selectAllButton.Size = New-Object System.Drawing.Size(175, 30)
+    $selectAllButton.Text = "Select All"
+    $selectAllButton.Add_Click({
+        for ($i = 0; $i -lt $folderListBox.Items.Count; $i++) {
+            $folderListBox.SetItemChecked($i, $true)
+        }
+    })
+    $folderSelectionForm.Controls.Add($selectAllButton)
+    
+    $deselectAllButton = New-Object System.Windows.Forms.Button
+    $deselectAllButton.Location = New-Object System.Drawing.Point(195, 370)
+    $deselectAllButton.Size = New-Object System.Drawing.Size(175, 30)
+    $deselectAllButton.Text = "Deselect All"
+    $deselectAllButton.Add_Click({
+        for ($i = 0; $i -lt $folderListBox.Items.Count; $i++) {
+            $folderListBox.SetItemChecked($i, $false)
+        }
+    })
+    $folderSelectionForm.Controls.Add($deselectAllButton)
+    
+    $okButton = New-Object System.Windows.Forms.Button
+    $okButton.Location = New-Object System.Drawing.Point(10, 410)
+    $okButton.Size = New-Object System.Drawing.Size(175, 30)
+    $okButton.Text = "OK"
+    $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $folderSelectionForm.Controls.Add($okButton)
+    $folderSelectionForm.AcceptButton = $okButton
+    
+    $cancelButton = New-Object System.Windows.Forms.Button
+    $cancelButton.Location = New-Object System.Drawing.Point(195, 410)
+    $cancelButton.Size = New-Object System.Drawing.Size(175, 30)
+    $cancelButton.Text = "Cancel"
+    $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $folderSelectionForm.Controls.Add($cancelButton)
+    $folderSelectionForm.CancelButton = $cancelButton
+    
+    # Get all available folders from the selected backups
+    $availableFolders = @{}
+    
+    foreach ($username in $selectedUsers) {
+        $backupIndex = $userControls[$username]["ComboBox"].SelectedIndex
+        $selectedBackup = $userControls[$username]["Backups"][$backupIndex]
+        
+        $backupDirs = Get-ChildItem -Path $selectedBackup.FullName -Directory | Where-Object { $_.Name -ne "temp" }
+        foreach ($dir in $backupDirs) {
+            $folderType = ""
+            $folderName = ""
+            
+            # Check if this is a Program Files folder
+            if ($dir.Name -eq "Program+Files" -or $dir.Name -eq "Program+Files+(x86)" -or $dir.Name -match "^Program\+Files") {
+                $folderType = "Program Files"
+                if ($dir.Name -match "\(x86\)") {
+                    $folderName = "Program Files (x86)"
+                } else {
+                    $folderName = "Program Files"
+                }
+            } 
+            # Check if this is a user folder
+            elseif ($dir.Name -match "^Users\+") {
+                $parts = $dir.Name -split "\+"
+                if ($parts.Count -ge 3) {
+                    $folderType = "User Folder"
+                    $folderName = $parts[2]
+                }
+            }
+            
+            if ($folderType -and -not $availableFolders.ContainsKey($folderName)) {
+                $availableFolders[$folderName] = $folderType
+            }
+        }
+    }
+    
+    # Add folders to the list box
+    foreach ($folder in $availableFolders.Keys | Sort-Object) {
+        $folderListBox.Items.Add($folder, $true)  # Add checked by default
+    }
+    
+    # Show the form
+    $result = $folderSelectionForm.ShowDialog()
+    
+    # Process the result
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        $selectedFolders = @()
+        for ($i = 0; $i -lt $folderListBox.Items.Count; $i++) {
+            if ($folderListBox.GetItemChecked($i)) {
+                $selectedFolders += $folderListBox.Items[$i]
+            }
+        }
+    } else {
+        return  # User cancelled
+    }
+    
+    # If no folders selected, restore all
+    if ($selectedFolders.Count -eq 0) {
+        $restoreAll = [System.Windows.Forms.MessageBox]::Show(
+            "No folders were selected. Do you want to restore all folders?",
+            "Restore All Folders",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        
+        if ($restoreAll -eq [System.Windows.Forms.DialogResult]::No) {
+            return
+        }
+    }
+    
+    # Disable selection controls during restore
+    $selectAllButton.Enabled = $false
+    $deselectAllButton.Enabled = $false
+    $browseButton.Enabled = $false
+    
+    # Disable checkboxes during restore
+    foreach ($controls in $userControls.Values) {
+        $controls["Checkbox"].Enabled = $false
+        $controls["ComboBox"].Enabled = $false
+        $controls["TargetUserComboBox"].Enabled = $false
+    }
 
+    # Show the cancel button in the main form
+    $cancelRestoreButton.Visible = $true
+    
     $form.BackColor = $backgroundColor
-    $statusTextBox.Clear()
     $errors = @()
     
     foreach ($username in $selectedUsers) {
-        $statusTextBox.AppendText("`r`nProcessing backup from user: $username`r`n")
+        # Check for cancellation
+        if ($script:cancelRestore) {
+            break
+        }
         
-        # Get selected backup
-        $selectedIndex = $userControls[$username]["ComboBox"].SelectedIndex
-        $selectedBackup = $userControls[$username]["Backups"][$selectedIndex]
+        $controls = $userControls[$username]
+        $selectedBackupText = $controls["ComboBox"].SelectedItem
+        $targetUser = $controls["TargetUserComboBox"].SelectedItem
         
-        if ($null -eq $selectedBackup) {
-            $errors += "$username : No backup selected"
-            $statusTextBox.AppendText("Error: No backup selected for $username`r`n")
+        if (-not $selectedBackupText -or $selectedBackupText -eq "No backups found") {
+            $errors += "${username}: No valid backup selected"
             continue
         }
-
-        # Get target user
-        $targetUser = $userControls[$username]["TargetUserComboBox"].SelectedItem
-        $statusTextBox.AppendText("Using backup: $($selectedBackup.Name)`r`n")
-        $statusTextBox.AppendText("Restoring to user: $targetUser`r`n")
         
-        # Get list of folders in the backup
-        $backupFolders = Get-ChildItem -Path $selectedBackup.FullName -Directory
-        
-        foreach ($folder in $backupFolders) {
-            $sourcePath = $folder.FullName
-            # Extract the relative path after the username and reconstruct it for the target user
-            $folderNameParts = $folder.Name -split '\+'
-            $relativePath = $folderNameParts[2..$($folderNameParts.Length-1)] -join '\'
-            $destPath = "C:\Users\$targetUser\$relativePath"
-            
-            $statusTextBox.AppendText("Processing $($folder.Name)...`r`n")
-            
-            if (Test-Path $sourcePath) {
-                try {
-                    # Create the parent directory if it doesn't exist
-                    $parentDir = Split-Path -Parent $destPath
-                    if (-not (Test-Path $parentDir)) {
-                        New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
-                    }
-                    
-                    Copy-Item -Path $sourcePath -Destination $destPath -Recurse -Force -ErrorAction Stop
-                    $statusTextBox.AppendText("Successfully restored to $destPath`r`n")
-                }
-                catch {
-                    $errors += "$($folder.Name): $_"
-                    $statusTextBox.AppendText("Error restoring $($folder.Name): $_`r`n")
-                }
-            }
-            else {
-                $errors += "$($folder.Name): Backup not found"
-                $statusTextBox.AppendText("Warning: $($folder.Name) backup not found`r`n")
-            }
+        if (-not $targetUser) {
+            $errors += "${username}: No target user selected"
+            continue
         }
+        
+        # Get the actual backup folder based on the selected text
+        $backupIndex = $controls["ComboBox"].SelectedIndex
+        $selectedBackup = $controls["Backups"][$backupIndex]
+        
+        if (-not $selectedBackup -or -not (Test-Path $selectedBackup.FullName)) {
+            $errors += "${username}: Cannot find backup folder at $($selectedBackup.FullName)"
+           continue
+        }
+        
+        Restore-Files -backupPath $selectedBackup.FullName -targetUser $targetUser -selectedFolders $selectedFolders
     }
     
-    if ($errors.Count -eq 0) {
-        $form.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
-        $statusTextBox.AppendText("`r`nRestore completed successfully!`r`n")
-    }
-    else {
-        $form.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
-        $statusTextBox.AppendText("`r`nRestore completed with errors:`r`n")
-        foreach ($error in $errors) {
-            $statusTextBox.AppendText("$error`r`n")
-        }
+    # Re-enable UI controls
+    $restoreButton.Enabled = $true
+    $selectAllButton.Enabled = $true
+    $deselectAllButton.Enabled = $true
+    $browseButton.Enabled = $true
+    
+    # Hide and reset the cancel button
+    $cancelRestoreButton.Visible = $false
+    $cancelRestoreButton.Enabled = $true
+    $cancelRestoreButton.Text = "Cancel Restore"
+    
+    # Reset the cancel flag
+    $script:cancelRestore = $false
+    
+    foreach ($controls in $userControls.Values) {
+        $controls["Checkbox"].Enabled = $true
+        $controls["ComboBox"].Enabled = $true
+        $controls["TargetUserComboBox"].Enabled = $true
     }
 })
 $form.Controls.Add($restoreButton)
+
+# Cancel Restore Button
+$cancelRestoreButton = New-Button "Cancel Restore" (New-Object System.Drawing.Point(10,670)) (New-Object System.Drawing.Size(560,30))
+$cancelRestoreButton.BackColor = [System.Drawing.Color]::FromArgb(232, 17, 35)
+$cancelRestoreButton.Visible = $false
+$cancelRestoreButton.Add_MouseEnter({
+    $this.BackColor = [System.Drawing.Color]::FromArgb(173, 26, 39)
+})
+$cancelRestoreButton.Add_MouseLeave({
+    $this.BackColor = [System.Drawing.Color]::FromArgb(232, 17, 35)
+})
+$cancelRestoreButton.Add_Click({
+    $script:cancelRestore = $true
+    $cancelRestoreButton.Enabled = $false
+    $cancelRestoreButton.Text = "Cancelling..."
+})
+$form.Controls.Add($cancelRestoreButton)
 
 # Show the form
 $form.ShowDialog()
