@@ -1,51 +1,114 @@
 # File Backup and Restore System
 
-This system allows you to backup and restore important user files including:
-- Downloads folder
-- Documents folder
-- Desktop folder
-- Chrome profile
-- Outlook files (.pst, .ost, .nst)
+This system allows you to backup and restore important user files and application data across Windows systems. It features a modern, user-friendly interface with comprehensive backup and restore capabilities.
+
+## Supported Content for Backup
+
+- **User Data**:
+  - Downloads folder
+  - Documents folder
+  - Desktop folder
+  - Personal files and folders
+- **Application Data**:
+  - Chrome profiles (bookmarks, history, extensions)
+  - Outlook data files (.pst, .ost, .nst)
+- **System Files** (requires administrator privileges):
+  - Program Files
+  - Program Files (x86)
+
+## Features
+
+### Backup Features
+- Modern, user-friendly graphical interface
+- Multi-user backup support with checkbox selection
+- Selective folder backup options
+- Custom backup location selection
+- Detailed progress tracking with status updates
+- Ability to cancel ongoing backups
+- Color-coded status indicators (green for success, red for errors)
+- Automatic date-based backup folder naming
+- Administrator mode for backing up system folders
+
+### Restore Features
+- Selective restoration from backups
+- Multi-user restore support
+- Target user selection (restore to original or different user)
+- Folder selection for granular restore control
+- Detailed progress tracking in the main window
+- Ability to cancel ongoing restore operations
+- Automatic detection of the latest backup for each user
+- Cross-user restoration capabilities
 
 ## How to Use
 
 ### To Create a Backup:
+
 1. Double-click `Backup.bat` to start the backup application
-2. Select the users you want to backup from the checkbox list
+2. **Select Users**: Choose which user profiles to backup
    - Use "Select All Users" to check all users
    - Use "Deselect All Users" to uncheck all users
-3. Click "Browse" to select the backup destination drive
-4. Click "Start Backup" to begin the backup process
+3. **Select Folders**: Choose which folders to include in the backup
+   - Standard user folders (Downloads, Documents, Desktop)
+   - Application data (Chrome, Outlook)
+   - System folders (requires administrator privileges)
+4. **Choose Backup Location**: 
+   - Click "Browse" to select the backup destination drive
+   - By default, backups are saved in the same directory as the application
+5. **Start Backup**: 
+   - Click "Start Backup" to begin the backup process
+   - Monitor progress in the status text box
+   - Use "Cancel Backup" button if needed to stop the operation
 
 ### To Restore from Backup:
+
 1. Double-click `Restore.bat` to start the restore application
-2. Select the users you want to restore from the checkbox list
-   - Use "Select All Users" to check all users
-   - Use "Deselect All Users" to uncheck all users
-3. Click "Browse" to select the drive containing your backups
-4. Click "Start Restore" to begin the restore process
-   - The system will automatically find and use the latest backup for each selected user
+2. **Select Backup Location**:
+   - Click "Browse folder" to select the drive containing your backups
+   - The system will automatically detect available backups
+3. **Select Users and Target**:
+   - Check the users whose backups you want to restore
+   - For each user, select which backup to use from the dropdown
+   - Choose the target user to restore to (can be different from source)
+4. **Start Restore**:
+   - Click "Start Restore" to begin the restore process
+   - In the folder selection window, choose which folders to restore
+   - Monitor progress in the status text box
+   - Use "Cancel Restore" button if needed to stop the operation
 
-## Features
+## Technical Details
 
-- Separate applications for backup and restore operations
-- Multi-user backup and restore support with checkbox selection
-- Automatic detection of latest backup for each user
-- User-friendly graphical interface
-- Visual feedback with color-coded status (green for success, red for errors)
-- Detailed status updates during backup/restore process
-- Preserves full path structure using '+' as separator (e.g., "Users+username+Documents")
-- Simple backup folder naming with username and date
+- **Backup Naming Convention**: `username_yyyy-MM-dd` (e.g., `john_2025-03-02`)
+- **Path Structure**: Full paths are preserved using '+' as separator
+  - Example: `C:\Users\username\Documents` becomes `Users+username+Documents`
+- **Backup Overwrite Policy**: Multiple backups on the same day for the same user will overwrite previous backups
+- **Restore Selection**: The system automatically identifies and offers the most recent backup for each user
+- **Administrator Requirements**:
+  - Admin privileges required to backup/restore Program Files
+  - Admin privileges required to restore to a different user's profile
 
-## Notes
+## Best Practices
 
-- If the script shows to responding don't close the application, it is still running in the background
-- The backup process will create folders with the format: `username_yyyy-MM-dd`
-  For example: `john_2025-01-18`
-- Each backed-up folder will maintain its full path structure with '+' separators
-  For example: `C:\Users\username\Documents` becomes `Users+username+Documents`
-- If you run multiple backups on the same day for the same user, the newer backup will overwrite the older one
-- The restore process will automatically find and use the most recent backup for each selected user
-- Make sure to close Chrome and Outlook before backing up or restoring their respective folders
-- Requires administrative privileges to restore backup to a different user
-- Only real user profiles with a Desktop folder are shown in the selection list
+- **Before Backup/Restore**:
+  - Close Chrome before backing up or restoring Chrome profiles
+  - Close Outlook before backing up or restoring Outlook data files
+  - Ensure sufficient disk space at the backup location
+- **During Operation**:
+  - Do not close the application if it appears unresponsive - it may be processing large files
+  - Check the status text box for real-time progress updates
+- **After Completion**:
+  - Verify backup/restore success through the status messages
+  - Check color indicators (green for success, red for errors)
+
+## Troubleshooting
+
+- **Application Requires Administrator**: If backing up Program Files, right-click the batch file and select "Run as administrator"
+- **Backup Not Found**: Ensure you've selected the correct backup location containing valid backups
+- **Restore Fails**: Check if target locations are accessible and not locked by running applications
+- **Performance Issues**: Large files (especially from Chrome and Outlook) may take longer to process
+
+## System Requirements
+
+- Windows 10 or Windows 11
+- PowerShell 5.1 or higher
+- Sufficient disk space for backups
+- Administrator privileges to backup and restore backup system folders (Program Files, Program Files (x86))
