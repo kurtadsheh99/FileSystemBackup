@@ -180,7 +180,7 @@ Get-ChildItem $scriptDirectory -Directory | Where-Object { $_.Name -match "^[^_]
         $usersScrollPanel.Controls.Add($targetUserComboBox)
 
         # Get backups for this user
-        $backups = Get-ChildItem $scriptDirectory -Directory | Where-Object { $_.Name -match "^$username`_\d{4}-\d{2}-\d{2}$" } | Sort-Object Name -Descending
+        $backups = Get-ChildItem $scriptDirectory -Directory | Where-Object { $_.Name -match "^$([regex]::Escape($username))_\d{4}-\d{2}-\d{2}$" } | Sort-Object Name -Descending
         
         $userControls[$username] = @{
             "Checkbox" = $checkbox
@@ -208,15 +208,15 @@ function Update-UserBackups {
         $comboBox.Items.Clear()
         
         # Get available backups for this user
-        $backups = Get-ChildItem -Path $backupLocation -Directory | 
-            Where-Object { $_.Name -match "^$username`_\d{4}-\d{2}-\d{2}$" } | 
+        $backups = Get-ChildItem -Path $backupLocation -Directory |
+            Where-Object { $_.Name -match "^$([regex]::Escape($username))_\d{4}-\d{2}-\d{2}$" } |
             Sort-Object Name -Descending
             
         $userControls[$username]["Backups"] = $backups
         
         if ($backups.Count -gt 0) {
             foreach ($backup in $backups) {
-                $backupDate = $backup.Name -replace "^$username`_"
+                $backupDate = $backup.Name -replace "^$([regex]::Escape($username))_"
                 $comboBox.Items.Add("Backup from $backupDate") | Out-Null
             }
             $comboBox.SelectedIndex = 0
@@ -401,6 +401,14 @@ function Restore-Files {
                 }
                 $folderPath = $parts[2..($parts.Length-1)] -join "\"
                 $targetPath = "C:\Users\$targetUser\$folderPath"
+                $resolvedTarget = [System.IO.Path]::GetFullPath($targetPath)
+                $resolvedBase = [System.IO.Path]::GetFullPath("C:\Users\$targetUser").TrimEnd('\') + '\'
+                if (-not $resolvedTarget.StartsWith($resolvedBase, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $statusTextBox.AppendText("Security: path traversal blocked for '$($dir.Name)'. Skipping.`r`n")
+                    $skippedFolders += "Security: path traversal blocked for '$($dir.Name)'"
+                    continue
+                }
+                $targetPath = $resolvedTarget
                 $statusTextBox.AppendText("Restoring to user folder: $targetPath`r`n")
             }
             
