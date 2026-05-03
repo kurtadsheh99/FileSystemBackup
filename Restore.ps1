@@ -371,21 +371,10 @@ function Restore-Files {
                     $statusTextBox.AppendText("Skipping system folder (requires administrator rights): $($dir.Name)`r`n")
                     continue
                 }
-                
-                # System folder (Program Files)
-                $targetPath = "C:\$($dir.Name.Replace('+', ' '))"
-                $statusTextBox.AppendText("Restoring to system folder: $targetPath`r`n")
-            } 
-            elseif ($dir.Name.StartsWith("Program+Files")) {
-                # This is for backward compatibility with older backups that might have different formats
-                # Skip Program Files if we don't have admin rights
-                if (-not (Test-AdminRights)) {
-                    $statusTextBox.AppendText("Skipping system folder (requires administrator rights): $($dir.Name)`r`n")
-                    continue
-                }
-                
-                # Try to determine the correct Program Files path
-                if ($dir.Name -match "Program\+Files\+\(x86\)") {
+
+                # Map to a fixed system path - never derive the target from the
+                # backup folder name, which could contain extra '+' segments.
+                if ($dir.Name -match "\(x86\)") {
                     $targetPath = "C:\Program Files (x86)"
                 } else {
                     $targetPath = "C:\Program Files"
